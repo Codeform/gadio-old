@@ -1,8 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"io"
 	"net/http"
 	"os"
 	re "regexp"
@@ -31,8 +29,7 @@ type closure struct {
 	catalog, //
 	title, //
 	summary, //
-	audio, //
-	bytes string
+	audio string
 }
 
 func main() {
@@ -70,9 +67,6 @@ func main() {
 	})
 
 	closureCrawler := pageCrawler.Clone()
-	audioHeader := pageCrawler.Clone()
-
-	fmt.Println(pageCrawler.ID, "", closureCrawler.ID, "", audioHeader.ID)
 
 	closures := sl.New()
 	var lck sync.Mutex
@@ -121,7 +115,7 @@ func main() {
 		link := e.Attr("href")
 
 		if ptnPage.MatchString(link) {
-			if num, _ := strconv.Atoi(ptnNum.FindString(link)); num <= 10 && num >= 1 {
+			if num, _ := strconv.Atoi(ptnNum.FindString(link)); num <= 75 {
 				e.Request.Visit(link)
 			}
 		}
@@ -132,7 +126,7 @@ func main() {
 	})
 
 	closureCrawler.OnHTML("span[data-text]", func(e *colly.HTMLElement) {
-		e.Request.Ctx.Put("summary", e.Text)
+		e.Request.Ctx.Put("summary", e.Request.Ctx.Get("summary")+"|"+e.Text)
 	})
 
 	closureCrawler.OnHTML("h1.originalPage_title", func(e *colly.HTMLElement) {
@@ -168,14 +162,9 @@ func main() {
 		}
 	}
 	results, _ := os.Create("./results/gadio.xml")
-	rsltXml.WriteTo(results)
-	results.WriteString(`
-	</channel>
-	</rss>
-	`)
-	results.Seek(0, io.SeekStart)
-	results.WriteString(`
-	<?xml version="1.0" encoding="UTF-8"?>
+	rsltXml.IndentTabs()
+	holder, _ := rsltXml.WriteToString()
+	results.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"
 	xmlns:content="http://purl.org/rss/1.0/modules/content/"
 	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
@@ -218,7 +207,11 @@ xmlns:rawvoice="http://www.rawvoice.com/rawvoiceRssModule/"
 	<itunes:category text="Games &amp; Hobbies">
 	<itunes:category text="Video Games" />
 </itunes:category>
+	` + holder + `
+	</channel>
+	</rss>
 	`)
+
 	results.Close()
 }
 
@@ -236,7 +229,8 @@ func (cl *closure) Marshal() *etree.Element {
 	var iter *etree.Element
 
 	iter = elem.CreateElement("title")
-	iter.SetText(cl.title + " " + cl.catalog)
+	iter.SetText(cl.title + " | " + cl.catalog)
+	// iter.SetText("sssss" + " | " + cl.catalog)
 
 	iter = elem.CreateElement("pubDate")
 	iter.SetText(cl.publish)
@@ -252,13 +246,13 @@ func (cl *closure) Marshal() *etree.Element {
 	iter.SetText("<![CDATA[" + cl.summary + "]]>")
 
 	iter = elem.CreateElement("wfw:commentRss")
-	iter.SetText("https://pagini-engine.com/feed/gadio.xml")
+	iter.SetText("http://feed.tangsuanradio.com/gadio.xml")
 
 	iter = elem.CreateElement("slash:comments")
 	iter.SetText("0")
 
 	iter = elem.CreateElement("itunes:image")
-	iter.SetText(cl.audio)
+	iter.SetText(cl.cover)
 
 	iter = elem.CreateElement("enclosure")
 	rsp, err := http.Head(cl.audio)
@@ -278,7 +272,7 @@ func (cl *closure) Marshal() *etree.Element {
 	iter = elem.CreateElement("itunes:author")
 	iter.SetText("www.gcores.com")
 
-	iter = elem.CreateElement("itunes:explicit>")
+	iter = elem.CreateElement("itunes:explicit")
 	iter.SetText("clean")
 
 	return elem
