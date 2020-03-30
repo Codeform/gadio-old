@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -21,8 +22,23 @@ const (
 	fmtPubIn = "2006-01-02"
 )
 
+func parseArgs() (int, int) {
+	start := flag.Int("from", 1, "starting page number")
+	end := flag.Int("to", 2, "ending page number")
+	purge := flag.Bool("purge", false, "purge cached scraps")
+	flag.Parse()
+	if *purge {
+		os.RemoveAll(".cache")
+	}
+	if !(*start >= 1 && *start <= *end) {
+		panic("Wrong starting page")
+	}
+	return *start, *end
+}
+
 func main() {
-	logs, _ := os.Create("./results/log.txt")
+	f, t := parseArgs()
+	logs, _ := os.Create("results/log.txt")
 	defer logs.Close()
 
 	now := time.Now()
@@ -45,14 +61,14 @@ func main() {
 	feed.AddCategory("Games & Hobbies", []string{"Video Games"})
 
 	ptnPage := re.MustCompile("/radios\\?page=\\d*$")
-	ptnClosure := re.MustCompile("/radios/\\d*$")
+	ptnEnclosure := re.MustCompile("/radios/\\d*$")
 	ptnNum := re.MustCompile("\\d*$")
 	ptnCovUrl := re.MustCompile("http.*\\.jpg")
 
 	pageCrawler := colly.NewCollector(
 		colly.AllowedDomains(domain),
 		colly.UserAgent("unknown"),
-		colly.CacheDir("./.cache"),
+		colly.CacheDir(".cache"),
 		colly.Debugger(&debug.LogDebugger{
 			Output: logs,
 		}),
@@ -64,7 +80,7 @@ func main() {
 		Parallelism: 4,
 	})
 
-	closureCrawler := pageCrawler.Clone()
+	enclosureCrawler := pageCrawler.Clone()
 
 	var lck sync.Mutex
 
@@ -98,14 +114,14 @@ func main() {
 				}
 			case "original_category":
 				{
-					pageCtx.Put("catalog", coe.ChildText("a"))
+					pageCtx.Put("category", coe.ChildText("a"))
 				}
 			}
 		})
 
 		e.ForEach("a[href]", func(_ int, coe *colly.HTMLElement) {
-			if ptnClosure.MatchString(coe.Attr("href")) {
-				closureCrawler.Request("GET",
+			if ptnEnclosure.MatchString(coe.Attr("href")) {
+				enclosureCrawler.Request("GET",
 					e.Request.AbsoluteURL(coe.Attr("href")),
 					nil, pageCtx, nil)
 			}
@@ -116,25 +132,25 @@ func main() {
 		link := e.Attr("href")
 
 		if ptnPage.MatchString(link) {
-			if num, _ := strconv.Atoi(ptnNum.FindString(link)); num <= 75 {
+			if num, _ := strconv.Atoi(ptnNum.FindString(link)); num <= t {
 				e.Request.Visit(link)
 			}
 		}
 	})
 
-	closureCrawler.OnHTML("a.originalButton.originalButton-circle.ml-3", func(e *colly.HTMLElement) {
+	enclosureCrawler.OnHTML("a.originalButton.originalButton-circle.ml-3", func(e *colly.HTMLElement) {
 		e.Request.Ctx.Put("audio", e.Attr("href"))
 	})
 
-	closureCrawler.OnHTML("span[data-text]", func(e *colly.HTMLElement) {
-		e.Request.Ctx.Put("summary", e.Request.Ctx.Get("summary")+"|"+e.Text)
+	enclosureCrawler.OnHTML("span[data-text]", func(e *colly.HTMLElement) {
+		e.Request.Ctx.Put("summary", e.Request.Ctx.Get("summary")+"\r\n"+e.Text)
 	})
 
-	closureCrawler.OnHTML("h1.originalPage_title", func(e *colly.HTMLElement) {
+	enclosureCrawler.OnHTML("h1.originalPage_title", func(e *colly.HTMLElement) {
 		e.Request.Ctx.Put("title", e.Text)
 	})
 
-	closureCrawler.OnScraped(func(rsp *colly.Response) {
+	enclosureCrawler.OnScraped(func(rsp *colly.Response) {
 		lck.Lock()
 		item := createFeedItem(rsp.Ctx)
 		feed.AddItem(item)
@@ -143,12 +159,12 @@ func main() {
 		log.Println("Return with scrapped podcast", item.PubDate, ":", item.Title)
 	})
 
-	pageCrawler.Visit(base + "radios")
+	pageCrawler.Visit(base + "radios?page=" + strconv.Itoa(f))
 
 	pageCrawler.Wait()
-	closureCrawler.Wait()
+	enclosureCrawler.Wait()
 
-	results, _ := os.Create("./results/gadio.xml")
+	results, _ := os.Create("results/gadio.xml")
 	feed.Encode(results)
 	results.Close()
 }
@@ -161,10 +177,14 @@ func createFeedItem(ctx *colly.Context) podcast.Item {
 	}
 	defer rsp.Body.Close()
 
+	if _, exist := rsp.Header["Content-Length"]; !exist {
+		return item
+	}
+
 	pub := ctx.GetAny("publish").(time.Time)
 	length, _ := strconv.Atoi(rsp.Header["Content-Length"][0])
 
-	item.Title = ctx.Get("title") + " | " + ctx.Get("catalog")
+	item.Title = ctx.Get("title") + " | " + ctx.Get("category")
 
 	item.Description = ctx.Get("summary")
 
